@@ -39,3 +39,7 @@ coverage.xml
 # ── OS ─────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+
+# ── Local development & tests ─────────────────────────────────────
+tests/
+.github/workflows/ci.yml

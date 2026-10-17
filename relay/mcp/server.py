@@ -5,6 +5,7 @@ Each wrapper is thin: it delegates to :mod:`relay.mcp.tools`, which holds
 the real logic, and runs the shared orchestration in :func:`_execute`
 (rate limits, transparent auto-unlock, piggyback footer, commit).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -19,7 +20,7 @@ from mcp.server.fastmcp import FastMCP
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from relay.crypto.vault import vault
-from relay.mcp import tools
+from relay.mcp import descriptions, tools
 from relay.mcp.context import get_request_context
 from relay.mcp.piggyback import apply_piggyback
 from relay.mcp.ratelimit import limiter
@@ -36,7 +37,10 @@ INSTRUCTIONS = (
     "to load full context instead of single messages. Verify unknown "
     "recipients with `whois` before first contact. Messages are "
     "end-to-end encrypted; if any tool returns `KEYCHAIN_LOCKED`, ask the "
-    "user for their keychain passphrase and call `unlock_keychain`, then retry."
+    "user for their keychain passphrase and call `unlock_keychain`, then retry. "
+    "Proactively call `check_inbox` at the start of every session, before "
+    "beginning any new task or subtask, and whenever the user mentions another "
+    "agent or is waiting on a reply."
 )
 
 mcp_server = FastMCP(
@@ -45,8 +49,8 @@ mcp_server = FastMCP(
     # Explicitly non-localhost: keeps FastMCP's auto DNS-rebinding
     # protection off for the public render host.
     host="0.0.0.0",
-    stateless_http=True,   # no session affinity — every call is self-contained
-    json_response=True,    # single JSON response per request (no SSE stream)
+    stateless_http=True,  # no session affinity — every call is self-contained
+    json_response=True,  # single JSON response per request (no SSE stream)
 )
 # Advertise serverInfo.version = 0.1.0 (§7.1). FastMCP does not expose a
 # version kwarg; the underlying low-level server reads this attribute.
@@ -57,7 +61,13 @@ _auto_unlock_denied: dict[tuple[str, str], float] = {}
 _AUTO_UNLOCK_DENY_SECONDS = 60.0
 
 _UNAVAILABLE = json.dumps(
-    {"error": {"code": "UNAVAILABLE", "message": "No authenticated agent on this request.", "retry_after": None}}
+    {
+        "error": {
+            "code": "UNAVAILABLE",
+            "message": "No authenticated agent on this request.",
+            "retry_after": None,
+        }
+    }
 )
 
 ToolFn = Callable[..., Awaitable[dict[str, Any]]]
@@ -100,9 +110,7 @@ async def _auto_unlock_if_possible(agent: Agent, db: AsyncSession, passphrase: s
     db.add(AuditLog(agent_id=agent.id, event="unlock"))
 
 
-async def _execute(
-    tool_name: str, fn: ToolFn, *, is_send: bool = False
-) -> str:
+async def _execute(tool_name: str, fn: ToolFn, *, is_send: bool = False) -> str:
     """Run a tool with the full request pipeline and return the JSON text block."""
     context = get_request_context()
     if context is None:
@@ -115,18 +123,20 @@ async def _execute(
     if retry_after is None and is_send:
         retry_after = limiter.check_send(agent.id)
     if retry_after is not None:
-        return _dumps(error_response(
-            "RATE_LIMITED", "Rate limit exceeded — wait and retry.", retry_after
-        ))
+        return _dumps(
+            error_response("RATE_LIMITED", "Rate limit exceeded — wait and retry.", retry_after)
+        )
 
     if tool_name == "unlock_keychain":
         lockout = limiter.unlock_retry_after(agent.id)
         if lockout is not None:
-            return _dumps(error_response(
-                "RATE_LIMITED",
-                "Too many failed unlock attempts — try again later.",
-                lockout,
-            ))
+            return _dumps(
+                error_response(
+                    "RATE_LIMITED",
+                    "Too many failed unlock attempts — try again later.",
+                    lockout,
+                )
+            )
 
     # -- transparent auto-unlock ---------------------------------------------
     await _auto_unlock_if_possible(agent, db, context.passphrase)
@@ -168,11 +178,7 @@ def _dumps(payload: dict[str, Any]) -> str:
 
 @mcp_server.tool(
     name="unlock_keychain",
-    description=(
-        "Unlock your encrypted keychain for this session. Call this when any "
-        "tool returns KEYCHAIN_LOCKED; ask the user for their keychain "
-        "passphrase first. Keys auto-lock after 15 minutes idle."
-    ),
+    description=descriptions.UNLOCK_KEYCHAIN,
 )
 async def tool_unlock_keychain(passphrase: str) -> str:
     return await _execute(
@@ -183,10 +189,7 @@ async def tool_unlock_keychain(passphrase: str) -> str:
 
 @mcp_server.tool(
     name="keychain_status",
-    description=(
-        "Check whether your keychain is locked or unlocked, and when it will "
-        "auto-lock. Use before crypto operations to avoid a KEYCHAIN_LOCKED round trip."
-    ),
+    description=descriptions.KEYCHAIN_STATUS,
 )
 async def tool_keychain_status() -> str:
     return await _execute("keychain_status", lambda db, agent: tools.keychain_status(db, agent))
@@ -194,11 +197,7 @@ async def tool_keychain_status() -> str:
 
 @mcp_server.tool(
     name="whois",
-    description=(
-        "Look up an agent's public profile by handle (e.g. 'alice' or "
-        "'alice@agentmail'). Returns display name, public keys, and the "
-        "fingerprint to verify out-of-band. Use before first contact."
-    ),
+    description=descriptions.WHOIS,
 )
 async def tool_whois(handle: str) -> str:
     return await _execute("whois", lambda db, agent: tools.whois(db, agent, handle))
@@ -206,12 +205,7 @@ async def tool_whois(handle: str) -> str:
 
 @mcp_server.tool(
     name="send_message",
-    description=(
-        "Send an end-to-end encrypted message to another agent. The payload "
-        "is sealed to the recipient's public key and signed with yours. "
-        "Pass in_reply_to (or thread_id) to continue an existing thread, and "
-        "an idempotency_key (e.g. a UUID) to make retries safe."
-    ),
+    description=descriptions.SEND_MESSAGE,
 )
 async def tool_send_message(
     to: str,
@@ -232,12 +226,7 @@ async def tool_send_message(
 
 @mcp_server.tool(
     name="check_inbox",
-    description=(
-        "Check this agent's inbox. IMPORTANT: call proactively at the start "
-        "of every session and before starting any new task. Returns message "
-        "summaries; call read_message for full content. Subjects appear only "
-        "when the keychain is unlocked."
-    ),
+    description=descriptions.CHECK_INBOX,
 )
 async def tool_check_inbox(
     unread_only: bool = True,
@@ -252,10 +241,7 @@ async def tool_check_inbox(
 
 @mcp_server.tool(
     name="read_message",
-    description=(
-        "Read a message's full content by id: verifies the sender's "
-        "signature, decrypts the body, and marks it as read."
-    ),
+    description=descriptions.READ_MESSAGE,
 )
 async def tool_read_message(id: str) -> str:
     return await _execute("read_message", lambda db, agent: tools.read_message(db, agent, id))
@@ -263,10 +249,7 @@ async def tool_read_message(id: str) -> str:
 
 @mcp_server.tool(
     name="reply",
-    description=(
-        "Reply within the same thread. Sugar over send_message — inherits the "
-        "thread and prefixes the subject with 'Re: '."
-    ),
+    description=descriptions.REPLY,
 )
 async def tool_reply(id: str, body: str, subject: str | None = None) -> str:
     return await _execute(
@@ -278,11 +261,7 @@ async def tool_reply(id: str, body: str, subject: str | None = None) -> str:
 
 @mcp_server.tool(
     name="get_thread",
-    description=(
-        "Load a full conversation thread in chronological order — use this "
-        "when context matters, it is much better than reading messages "
-        "individually. Bodies appear only when the keychain is unlocked."
-    ),
+    description=descriptions.GET_THREAD,
 )
 async def tool_get_thread(thread_id: str, limit: int = 50) -> str:
     return await _execute(
@@ -292,10 +271,7 @@ async def tool_get_thread(thread_id: str, limit: int = 50) -> str:
 
 @mcp_server.tool(
     name="get_sent",
-    description=(
-        "View your sent messages with read receipts: see which messages the "
-        "recipient read and when (read_at)."
-    ),
+    description=descriptions.GET_SENT,
 )
 async def tool_get_sent(limit: int = 20) -> str:
     return await _execute("get_sent", lambda db, agent: tools.get_sent(db, agent, limit))
@@ -303,10 +279,7 @@ async def tool_get_sent(limit: int = 20) -> str:
 
 @mcp_server.tool(
     name="delete_message",
-    description=(
-        "Delete a received message from your inbox (recipient-side soft "
-        "delete). The sender's copy is unaffected."
-    ),
+    description=descriptions.DELETE_MESSAGE,
 )
 async def tool_delete_message(id: str) -> str:
     return await _execute("delete_message", lambda db, agent: tools.delete_message(db, agent, id))
