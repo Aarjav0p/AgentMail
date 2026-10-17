@@ -1,13 +1,14 @@
 """Admin endpoints — TTL sweeper (``POST /v1/admin/purge``)."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import delete, func, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from relay.config import settings
 from relay.db import get_db
-from relay.models.schema import AuditLog, Message
+from relay.models.schema import AuditLog
 
 router = APIRouter(prefix="/v1")
 
@@ -26,57 +27,67 @@ def _require_admin_token(request: Request) -> None:
         )
 
 
+async def run_purge(
+    db: AsyncSession,
+    *,
+    read_ttl_days: int | None = None,
+    client_ip: str | None = None,
+) -> dict[str, int]:
+    """Execute the TTL sweep for messages and audit log entries (RETENTION-01).
+
+    * Unread messages: purged only when ``expires_at < now()`` (30 days from creation).
+    * Read messages: judged solely by time-of-reading (``read_at < now() - read_ttl_days``).
+    * Trim audit_log entries older than 90 days.
+    """
+    if read_ttl_days is None:
+        read_ttl_days = settings.read_ttl_days
+
+    # Restructured two-branch sweep (Step 3 / §2 fix).
+    # Parameterized with make_interval to avoid hardcoded strings.
+    result_messages = await db.execute(
+        text("""
+            DELETE FROM messages
+            WHERE (read_at IS NULL AND expires_at < now())
+               OR (read_at IS NOT NULL AND read_at < now() - make_interval(days => :read_ttl))
+        """),
+        {"read_ttl": read_ttl_days},
+    )
+    purged_messages: int = result_messages.rowcount or 0
+
+    # Trim audit log (90 days).
+    result_audit = await db.execute(
+        text("DELETE FROM audit_log WHERE created_at < now() - interval '90 days'")
+    )
+    purged_audit: int = result_audit.rowcount or 0
+
+    # Audit the purge itself with deleted_count (Step 5).
+    ip_detail = f"deleted_count={purged_messages}"
+    if client_ip:
+        ip_detail = f"{client_ip} | {ip_detail}"
+
+    db.add(
+        AuditLog(
+            event="purge",
+            ip=ip_detail,
+        )
+    )
+    await db.commit()
+
+    return {
+        "purged_messages": purged_messages,
+        "purged_audit": purged_audit,
+    }
+
+
 @router.post("/admin/purge")
 async def purge(
     request: Request,
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, int]:
     """Run the TTL sweep.
-
-    * Delete messages whose ``expires_at`` has passed.
-    * Delete messages read longer than ``read_ttl_days`` ago.
-    * Trim ``audit_log`` entries older than 90 days.
 
     Protected by ``X-Admin-Token``.
     """
     _require_admin_token(request)
-
-    read_ttl = settings.read_ttl_days
-
-    # 1. Expired messages.
-    result_expired = await db.execute(
-        delete(Message).where(Message.expires_at < func.now())
-    )
-    purged_expired: int = result_expired.rowcount  # type: ignore[assignment]
-
-    # 2. Read messages past read-TTL.
-    result_read = await db.execute(
-        delete(Message).where(
-            Message.read_at.is_not(None),
-            Message.read_at < func.now() - text(f"interval '{read_ttl} days'"),
-        )
-    )
-    purged_read: int = result_read.rowcount  # type: ignore[assignment]
-
-    total_purged_messages = purged_expired + purged_read
-
-    # 3. Trim audit log (90 days).
-    result_audit = await db.execute(
-        delete(AuditLog).where(
-            AuditLog.created_at < func.now() - text("interval '90 days'"),
-        )
-    )
-    purged_audit: int = result_audit.rowcount  # type: ignore[assignment]
-
-    # Audit the purge itself.
-    db.add(
-        AuditLog(
-            event="purge",
-            ip=request.client.host if request.client else None,
-        )
-    )
-
-    return {
-        "purged_messages": total_purged_messages,
-        "purged_audit": purged_audit,
-    }
+    client_ip = request.client.host if request.client else None
+    return await run_purge(db, client_ip=client_ip)

@@ -1,4 +1,5 @@
 """AgentMail relay configuration — all settings from environment variables."""
+
 from __future__ import annotations
 
 from pydantic_settings import BaseSettings
@@ -17,8 +18,10 @@ class Settings(BaseSettings):
     vault_ttl_minutes: int = 15
     vault_max_entries: int = 500
 
-    # --- Message TTLs (the §6.6 levers) ---
-    read_ttl_days: int = 7
+    # --- Message TTLs (RETENTION-01: 60d read / 30d unread) ---
+    # Read messages: kept 60 days from read_at (webmail history window).
+    # Unread messages: kept 30 days from created_at (abandoned-mailbox reclamation).
+    read_ttl_days: int = 60
     unread_ttl_days: int = 30
 
     # --- Quotas ---

@@ -15,6 +15,7 @@ jobs:
       - name: Install PostgreSQL client
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
 
+      # Switch criterion: when the compressed daily dump exceeds ~200 MB, move to weekly full backups with 4-week retention.
       - name: Dump database
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -23,6 +24,7 @@ jobs:
           FILENAME="backup_${TIMESTAMP}.sql.gz"
           pg_dump "$DATABASE_URL" | gzip > "$FILENAME"
           echo "FILENAME=$FILENAME" >> "$GITHUB_ENV"
+          ls -la "$FILENAME"
 
       - name: Upload backup artifact
         uses: actions/upload-artifact@v4

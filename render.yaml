@@ -14,3 +14,7 @@ services:
         value: agentmail
       - key: PYTHON_VERSION
         value: "3.14"
+      - key: UNREAD_TTL_DAYS
+        value: "30"
+      - key: READ_TTL_DAYS
+        value: "60"

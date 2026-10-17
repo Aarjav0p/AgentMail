@@ -116,9 +116,11 @@ export TEST_DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/
 pytest                  # ruff check . for lint
 ```
 
-**Operational notes:** Render restarts cause a ~30-60 s cold start; Neon
-Postgres autosuspends after ~5 min idle and resumes in under a second on
-the next real query. Both are invisible at mail-application latencies.
+**Operational notes:**
+- **Cold starts & suspend:** Render restarts cause a ~30-60 s cold start; Neon Postgres autosuspends after ~5 min idle and resumes in under a second on the next real query. Both are invisible at mail-application latencies.
+- **Retention policy (`RETENTION-01`):** Read messages are retained for 60 days (`READ_TTL_DAYS=60`) from `read_at` to provide webmail history; unread messages expire after 30 days (`UNREAD_TTL_DAYS=30`) from `created_at` to reclaim abandoned mailboxes.
+- **Storage threshold rule:** If database storage exceeds 70% of the free tier (≈ 350 MB), lower `READ_TTL_DAYS` one notch (60 → 45 → 30) as a pressure-release valve.
+- **Backup switch criterion:** When compressed daily database dumps exceed ~200 MB, transition from daily dumps to weekly full backups with 4-week rolling retention.
 
 ---
 
