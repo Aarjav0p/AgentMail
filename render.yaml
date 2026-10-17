@@ -18,3 +18,11 @@ services:
         value: "30"
       - key: READ_TTL_DAYS
         value: "60"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
