@@ -305,11 +305,17 @@ async def test_09_description_guards():
 async def test_10_multi_agent_owner(db):
     """Test 10: Two agents sharing the same owner_user_id both resolve to the same target."""
     await create_contacts_table(db)
-    owner_id = str(uuid7())
-    await insert_contact(db, owner_id, "shared-contact", "target-10")
+    # NOTE: agents_owner_one_idx (DASH-01 §3) enforces one agent per owner in
+    # the MVP schema, so "agents sharing a book" is simulated with two owners
+    # who saved the same alias -> same target. The §13 multi-agent UI lifts
+    # the one-agent constraint; this test then collapses to the old form.
+    owner_1 = str(uuid7())
+    owner_2 = str(uuid7())
+    await insert_contact(db, owner_1, "shared-contact", "target-10")
+    await insert_contact(db, owner_2, "shared-contact", "target-10")
 
-    agent_1, _ = await insert_agent(db, "agent-1-shared", owner_user_id=owner_id)
-    agent_2, _ = await insert_agent(db, "agent-2-shared", owner_user_id=owner_id)
+    agent_1, _ = await insert_agent(db, "agent-1-shared", owner_user_id=owner_1)
+    agent_2, _ = await insert_agent(db, "agent-2-shared", owner_user_id=owner_2)
     target, _ = await insert_agent(db, "target-10")
 
     res_1 = await call_tool(

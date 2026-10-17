@@ -90,9 +90,20 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
             status_code=400,
             content={"error": {"code": "VALIDATION_ERROR", "message": msg}},
         )
+    safe_errors = []
+    for err in exc.errors():
+        err = dict(err)
+        if "ctx" in err:
+            # ctx may hold raw ValueError objects (pydantic >=2.10) — not JSON serializable
+            err["ctx"] = (
+                {k: str(v) for k, v in err["ctx"].items()}
+                if isinstance(err["ctx"], dict)
+                else str(err["ctx"])
+            )
+        safe_errors.append(err)
     return JSONResponse(
         status_code=422,
-        content={"detail": exc.errors()},
+        content={"detail": safe_errors},
     )
 
 

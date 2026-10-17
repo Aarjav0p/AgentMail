@@ -51,14 +51,15 @@ async def find_contact_alias(
 
     alias = raw_to.strip().lower()
     try:
-        result = await db.execute(
-            text(
-                "SELECT target_handle FROM user_contacts "
-                "WHERE owner_user_id = :owner AND alias = :alias LIMIT 1"
-            ),
-            {"owner": owner_user_id, "alias": alias},
-        )
-        row = result.fetchone()
+        async with db.begin_nested():  # savepoint: guard must not poison the send transaction
+            result = await db.execute(
+                text(
+                    "SELECT target_handle FROM user_contacts "
+                    "WHERE owner_user_id = :owner AND alias = :alias LIMIT 1"
+                ),
+                {"owner": owner_user_id, "alias": alias},
+            )
+            row = result.fetchone()
         if row is not None:
             return row[0], alias
         return raw_to, None
@@ -82,11 +83,12 @@ async def load_alias_map(
         return {}
 
     try:
-        result = await db.execute(
-            text("SELECT target_handle, alias FROM user_contacts WHERE owner_user_id = :owner"),
-            {"owner": owner_user_id},
-        )
-        rows: list[Any] = result.fetchall()
+        async with db.begin_nested():  # savepoint: never poison the caller's transaction
+            result = await db.execute(
+                text("SELECT target_handle, alias FROM user_contacts WHERE owner_user_id = :owner"),
+                {"owner": owner_user_id},
+            )
+            rows: list[Any] = result.fetchall()
         alias_map: dict[str, str] = {}
         for target_handle, alias in rows:
             address = f"{target_handle}@{settings.relay_domain}"
