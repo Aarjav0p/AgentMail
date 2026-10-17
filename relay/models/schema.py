@@ -1,4 +1,5 @@
 """SQLAlchemy 2.0 declarative models — mirrors §6.1-6.2 DDL exactly."""
+
 from __future__ import annotations
 
 import datetime
@@ -20,6 +21,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
     """Shared base for all models."""
+
     pass
 
 
@@ -35,29 +37,24 @@ class Agent(Base):
     )
     display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     api_key_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    enc_pub: Mapped[str] = mapped_column(Text, nullable=False)       # hex, X25519
-    sign_pub: Mapped[str] = mapped_column(Text, nullable=False)      # hex, Ed25519
-    key_blob: Mapped[str] = mapped_column(Text, nullable=False)      # base64 SecretBox
+    enc_pub: Mapped[str] = mapped_column(Text, nullable=False)  # hex, X25519
+    sign_pub: Mapped[str] = mapped_column(Text, nullable=False)  # hex, Ed25519
+    key_blob: Mapped[str] = mapped_column(Text, nullable=False)  # base64 SecretBox
     key_epoch: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     kdf_params: Mapped[dict] = mapped_column(JSONB, nullable=False)
     quota_bytes: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("5242880")
     )
-    rate_tier: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default=text("'free'")
-    )
-    footer_unread: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("0")
-    )
-    footer_latest: Mapped[str | None] = mapped_column(
-        UUID(as_uuid=False), nullable=True
-    )
+    rate_tier: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'free'"))
+    footer_unread: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    footer_latest: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
     deleted_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    owner_user_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
 
     __table_args__ = (
         CheckConstraint(
@@ -94,9 +91,7 @@ class Message(Base):
     )
     ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
     sig: Mapped[str] = mapped_column(Text, nullable=False)
-    key_epoch: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("1")
-    )
+    key_epoch: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     idempotency_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
@@ -143,9 +138,7 @@ class FeatureFlag(Base):
         UUID(as_uuid=False), ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True
     )
     flag: Mapped[str] = mapped_column(Text, primary_key=True)
-    enabled: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("false")
-    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
 
 
 class AuditLog(Base):
@@ -161,6 +154,4 @@ class AuditLog(Base):
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
 
-    __table_args__ = (
-        Index("audit_ttl_idx", "created_at"),
-    )
+    __table_args__ = (Index("audit_ttl_idx", "created_at"),)

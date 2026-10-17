@@ -6,6 +6,7 @@ Auth, rate limits, auto-unlock, and the piggyback footer are orchestrated
 one level up in :mod:`relay.mcp.server`; these functions are pure
 database + crypto logic so they are directly unit-testable.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -28,6 +29,7 @@ from relay.crypto.envelope import (
     verify_signature,
 )
 from relay.crypto.vault import vault
+from relay.mcp.contacts import find_contact_alias, load_alias_map
 from relay.models.schema import Agent, AuditLog, Message
 
 # ---------------------------------------------------------------------------
@@ -40,9 +42,7 @@ def now_utc() -> datetime.datetime:
     return datetime.datetime.now(datetime.UTC)
 
 
-def error_response(
-    code: str, message: str, retry_after: int | None = None
-) -> dict[str, Any]:
+def error_response(code: str, message: str, retry_after: int | None = None) -> dict[str, Any]:
     """Build a uniform error response per §5.7."""
     return {
         "error": {
@@ -95,9 +95,7 @@ def _canonical_recipient(to: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def derive_private_keys(
-    agent: Agent, passphrase: str
-) -> tuple[bytes, bytes] | None:
+def derive_private_keys(agent: Agent, passphrase: str) -> tuple[bytes, bytes] | None:
     """Run Argon2id + SecretBox over the stored blob.
 
     Returns ``(enc_sk_bytes, sign_sk_bytes)`` for the newest epoch, or
@@ -151,9 +149,7 @@ async def unlock_keychain(db: AsyncSession, agent: Agent, passphrase: str) -> di
     keys = await asyncio.to_thread(derive_private_keys, agent, passphrase)
     if keys is None:
         db.add(AuditLog(agent_id=agent.id, event="unlock_fail"))
-        return error_response(
-            "BAD_PASSPHRASE", "Passphrase incorrect or key blob corrupted."
-        )
+        return error_response("BAD_PASSPHRASE", "Passphrase incorrect or key blob corrupted.")
 
     enc_sk, sign_sk = keys
     await store_keys_in_vault(agent, enc_sk, sign_sk)
@@ -265,20 +261,28 @@ async def send_message(
     body_bytes = body.encode("utf-8")
     if len(body_bytes) > 64_000:
         return error_response(
-            "MESSAGE_TOO_LARGE", "Body must be ≤ 64,000 bytes UTF-8 — shorten it or link to the content."
+            "MESSAGE_TOO_LARGE",
+            "Body must be ≤ 64,000 bytes UTF-8 — shorten it or link to the content.",
         )
     if b"\x00" in body_bytes:
         return error_response("VALIDATION_ERROR", "Body must not contain NUL bytes.")
 
-    # -- resolve recipient ---------------------------------------------------
-    recipient_handle = _canonical_recipient(to)
+    # -- resolve recipient & contact alias (ALIAS-01) ------------------------
+    effective_to, resolved_alias = await find_contact_alias(
+        db, getattr(agent, "owner_user_id", None), to
+    )
+    recipient_handle = _canonical_recipient(effective_to)
     result = await db.execute(
-        select(Agent).where(
-            Agent.handle == recipient_handle, Agent.deleted_at.is_(None)
-        )
+        select(Agent).where(Agent.handle == recipient_handle, Agent.deleted_at.is_(None))
     )
     recipient = result.scalar_one_or_none()
     if recipient is None:
+        if resolved_alias is not None:
+            return error_response(
+                "AGENT_NOT_FOUND",
+                f"Your contact '{resolved_alias}' points to {recipient_handle}@{settings.relay_domain}, "
+                "which is not a registered agent.",
+            )
         return error_response(
             "AGENT_NOT_FOUND",
             f"No live agent with address '{to}' — use whois to verify the handle.",
@@ -294,17 +298,18 @@ async def send_message(
         )
         existing = existing_result.scalar_one_or_none()
         if existing is not None:
-            return {
-                "result": {
-                    "id": existing.id,
-                    "thread_id": existing.thread_id,
-                    "from": _address(agent.handle),
-                    "to": _address(recipient.handle),
-                    "sent_at": existing.created_at.isoformat() if existing.created_at else None,
-                    "status": "stored",
-                    "idempotent_replay": True,
-                }
+            res_item = {
+                "id": existing.id,
+                "thread_id": existing.thread_id,
+                "from": _address(agent.handle),
+                "to": _address(recipient.handle),
+                "sent_at": existing.created_at.isoformat() if existing.created_at else None,
+                "status": "stored",
+                "idempotent_replay": True,
             }
+            if resolved_alias is not None:
+                res_item["resolved_alias"] = resolved_alias
+            return {"result": res_item}
 
     # -- thread resolution (§5.6) ---------------------------------------------
     now = now_utc()
@@ -354,13 +359,9 @@ async def send_message(
     if len(payload_json.encode("utf-8")) > 68_000:
         return error_response("MESSAGE_TOO_LARGE", "Total payload exceeds the 68 KB limit.")
 
-    ciphertext_b64 = await asyncio.to_thread(
-        seal_message, payload_json, recipient.enc_pub
-    )
+    ciphertext_b64 = await asyncio.to_thread(seal_message, payload_json, recipient.enc_pub)
     ciphertext_bytes = base64.b64decode(ciphertext_b64)
-    sig_b64 = await asyncio.to_thread(
-        sign_ciphertext, ciphertext_bytes, bytes(entry.sign_sk)
-    )
+    sig_b64 = await asyncio.to_thread(sign_ciphertext, ciphertext_bytes, bytes(entry.sign_sk))
 
     # -- quota (§6.4) -----------------------------------------------------------
     size_bytes = len(ciphertext_b64)
@@ -401,17 +402,19 @@ async def send_message(
         )
     )
 
-    return {
-        "result": {
-            "id": msg_id,
-            "thread_id": resolved_thread_id,
-            "from": _address(agent.handle),
-            "to": _address(recipient.handle),
-            "sent_at": sent_at,
-            "status": "stored",
-            "idempotent_replay": False,
-        }
+    res_result = {
+        "id": msg_id,
+        "thread_id": resolved_thread_id,
+        "from": _address(agent.handle),
+        "to": _address(recipient.handle),
+        "sent_at": sent_at,
+        "status": "stored",
+        "idempotent_replay": False,
     }
+    if resolved_alias is not None:
+        res_result["resolved_alias"] = resolved_alias
+
+    return {"result": res_result}
 
 
 # ---------------------------------------------------------------------------
@@ -434,9 +437,7 @@ async def check_inbox(
     if before:
         before_dt = _parse_timestamp(before)
         if before_dt is None:
-            return error_response(
-                "VALIDATION_ERROR", "'before' must be an RFC 3339 timestamp."
-            )
+            return error_response("VALIDATION_ERROR", "'before' must be an RFC 3339 timestamp.")
 
     query = (
         select(Message)
@@ -461,16 +462,20 @@ async def check_inbox(
     sender_map = await _handle_map(db, {row.sender_id for row in rows})
     entry = await vault.get(agent.id)
     unlocked = entry is not None
+    alias_map = await load_alias_map(db, getattr(agent, "owner_user_id", None))
 
     messages: list[dict[str, Any]] = []
     for msg in rows:
+        sender_addr = sender_map.get(msg.sender_id, "unknown")
         item: dict[str, Any] = {
             "id": msg.id,
-            "from": sender_map.get(msg.sender_id, "unknown"),
+            "from": sender_addr,
             "thread_id": msg.thread_id,
             "received_at": msg.created_at.isoformat() if msg.created_at else None,
             "read": msg.read_at is not None,
         }
+        if sender_addr in alias_map:
+            item["from_alias"] = alias_map[sender_addr]
         if unlocked and entry is not None:
             subject = _decrypt_subject(msg.ciphertext, bytes(entry.enc_sk))
             if subject is not None:
@@ -485,9 +490,7 @@ async def check_inbox(
         }
     }
     if not unlocked:
-        response["result"]["note"] = (
-            "Subjects hidden — call unlock_keychain to reveal them."
-        )
+        response["result"]["note"] = "Subjects hidden — call unlock_keychain to reveal them."
     return response
 
 
@@ -531,36 +534,37 @@ async def read_message(db: AsyncSession, agent: Agent, message_id: str) -> dict[
     if agent.id == msg.recipient_id and msg.read_at is None:
         msg.read_at = now_utc()
 
-    recipient_result = await db.execute(
-        select(Agent.handle).where(Agent.id == msg.recipient_id)
-    )
+    recipient_result = await db.execute(select(Agent.handle).where(Agent.id == msg.recipient_id))
     recipient_handle = recipient_result.scalar_one_or_none()
 
-    return {
-        "result": {
-            "id": msg.id,
-            "thread_id": msg.thread_id,
-            "from": _address(sender.handle) if sender else "unknown",
-            "to": _address(recipient_handle) if recipient_handle else "unknown",
-            "subject": payload.get("subject"),
-            "body": payload.get("body"),
-            "in_reply_to": payload.get("in_reply_to"),
-            "sent_at": payload.get("sent_at"),
-            "received_at": msg.created_at.isoformat() if msg.created_at else None,
-            "headers": payload.get("headers", {}),
-            "read": msg.read_at is not None,
-            "signature_valid": signature_valid,
-        }
+    sender_addr = _address(sender.handle) if sender else "unknown"
+    alias_map = await load_alias_map(db, getattr(agent, "owner_user_id", None))
+
+    result_payload: dict[str, Any] = {
+        "id": msg.id,
+        "thread_id": msg.thread_id,
+        "from": sender_addr,
+        "to": _address(recipient_handle) if recipient_handle else "unknown",
+        "subject": payload.get("subject"),
+        "body": payload.get("body"),
+        "in_reply_to": payload.get("in_reply_to"),
+        "sent_at": payload.get("sent_at"),
+        "received_at": msg.created_at.isoformat() if msg.created_at else None,
+        "headers": payload.get("headers", {}),
+        "read": msg.read_at is not None,
+        "signature_valid": signature_valid,
     }
+    if sender_addr in alias_map:
+        result_payload["from_alias"] = alias_map[sender_addr]
+
+    return {"result": result_payload}
 
 
 async def _sent_copy_response(db: AsyncSession, msg: Message) -> dict[str, Any]:
     """Metadata-only view of your own sent message (body sealed to recipient)."""
     sender_result = await db.execute(select(Agent).where(Agent.id == msg.sender_id))
     sender = sender_result.scalar_one_or_none()
-    recipient_result = await db.execute(
-        select(Agent.handle).where(Agent.id == msg.recipient_id)
-    )
+    recipient_result = await db.execute(select(Agent.handle).where(Agent.id == msg.recipient_id))
     recipient_handle = recipient_result.scalar_one_or_none()
 
     signature_valid = (
@@ -608,9 +612,7 @@ async def reply(
         return error_response("NOT_FOUND", f"Message '{message_id}' not found.")
 
     # The reply goes to the other party.
-    target_id = (
-        original.recipient_id if agent.id == original.sender_id else original.sender_id
-    )
+    target_id = original.recipient_id if agent.id == original.sender_id else original.sender_id
 
     target_result = await db.execute(select(Agent).where(Agent.id == target_id))
     target = target_result.scalar_one_or_none()
@@ -619,7 +621,9 @@ async def reply(
 
     if subject is None:
         original_subject = _decrypt_subject(original.ciphertext, bytes(entry.enc_sk)) or ""
-        subject = original_subject if original_subject.startswith("Re: ") else f"Re: {original_subject}"
+        subject = (
+            original_subject if original_subject.startswith("Re: ") else f"Re: {original_subject}"
+        )
 
     return await send_message(
         db,
@@ -660,9 +664,7 @@ async def get_thread(
     )
     rows = list(result.scalars().all())
     if not rows:
-        return error_response(
-            "NOT_FOUND", f"Thread '{thread_id}' not found or not visible to you."
-        )
+        return error_response("NOT_FOUND", f"Thread '{thread_id}' not found or not visible to you.")
 
     agent_ids: set[str] = set()
     for row in rows:
@@ -701,9 +703,7 @@ async def get_thread(
         }
     }
     if not unlocked:
-        response["result"]["note"] = (
-            "Bodies hidden — call unlock_keychain to reveal them."
-        )
+        response["result"]["note"] = "Bodies hidden — call unlock_keychain to reveal them."
     return response
 
 
@@ -757,9 +757,7 @@ async def delete_message(db: AsyncSession, agent: Agent, message_id: str) -> dic
     if msg.deleted_at is not None:
         return {"result": {"deleted": True, "already_deleted": True}}
 
-    await db.execute(
-        update(Message).where(Message.id == message_id).values(deleted_at=now_utc())
-    )
+    await db.execute(update(Message).where(Message.id == message_id).values(deleted_at=now_utc()))
     return {"result": {"deleted": True}}
 
 
@@ -772,9 +770,7 @@ async def _handle_map(db: AsyncSession, agent_ids: set[str]) -> dict[str, str]:
     """Map agent ids → full addresses for a set of ids."""
     if not agent_ids:
         return {}
-    result = await db.execute(
-        select(Agent.id, Agent.handle).where(Agent.id.in_(agent_ids))
-    )
+    result = await db.execute(select(Agent.id, Agent.handle).where(Agent.id.in_(agent_ids)))
     return {row_id: _address(handle) for row_id, handle in result}
 
 

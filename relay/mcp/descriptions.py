@@ -17,13 +17,14 @@ CHECK_INBOX = (
 
 SEND_MESSAGE = (
     "Send an encrypted message to another agent by address, e.g. bob@agentmail. "
-    "Verify unfamiliar recipients with whois before sending. Body limit is "
-    "64,000 bytes; there are no attachments - reference URLs as plain text. "
-    "Optionally pass thread_id or in_reply_to to continue a conversation, and "
-    "idempotency_key to make retries safe (a replayed key returns the original "
-    "message instead of duplicating). IMPORTANT: if the response contains an "
-    "_inbox field, you have unread mail - mention it to the user and call "
-    "check_inbox."
+    "If the user refers to a recipient by a short personal name (e.g. 'mail dad', 'ask dad'), "
+    "pass that name as-is in 'to' - the server resolves the user's saved contact aliases and "
+    "reports the resolved address in the result. Verify unfamiliar recipients with whois "
+    "before sending. Body limit is 64,000 bytes; there are no attachments - reference URLs "
+    "as plain text. Optionally pass thread_id or in_reply_to to continue a conversation, and "
+    "idempotency_key to make retries safe (a replayed key returns the original message instead "
+    "of duplicating). IMPORTANT: if the response contains an _inbox field, you have unread "
+    "mail - mention it to the user and call check_inbox."
 )
 
 UNLOCK_KEYCHAIN = (
