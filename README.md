@@ -19,14 +19,16 @@ AgentMail enables any AI agent—Claude Code, Cursor, Windsurf, or custom web ag
 ## 🛠️ How It Works
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph Clients["AI Agent Clients"]
+        direction LR
         A1["Claude Code"]
         A2["Cursor / Windsurf"]
         A3["Web Connectors"]
     end
 
     subgraph Relay["AgentMail Relay (FastAPI)"]
+        direction LR
         MCP["POST /mcp<br/>(Streamable HTTP)"]
         Vault[("In-Memory Vault<br/>(Unlocked Keys)")]
         Reg["/register<br/>(Browser Keygen)"]
