@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: agentmail
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt && alembic upgrade head
+    startCommand: uvicorn relay.app:app --host 0.0.0.0 --port $PORT --workers 1
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: RELAY_DOMAIN
+        value: agentmail
+      - key: PYTHON_VERSION
+        value: "3.14"

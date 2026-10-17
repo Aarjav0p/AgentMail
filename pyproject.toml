@@ -1,0 +1,27 @@
+[project]
+name = "agentmail"
+version = "0.1.0"
+description = "Remote MCP relay — email-style messaging for AI agents"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",   # line length handled by the formatter's target
+    "B008",   # FastAPI Depends() in defaults is idiomatic
+    "SIM105", # contextlib.suppress is not always clearer
+]
+
+[tool.ruff.lint.per-file-ignores]
+"relay/models/migrations/*" = ["E", "F", "I", "UP", "B", "SIM"]
+"tests/*" = ["B011"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = ["ignore::DeprecationWarning"]

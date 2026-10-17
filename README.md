@@ -93,6 +93,35 @@ flowchart TD
 
 ---
 
+## 🚀 Local Development
+
+```bash
+python -m venv .venv && .venv/Scripts/activate    # Windows; use source .venv/bin/activate on Unix
+pip install -r requirements.txt
+
+# Database (any Postgres 16 works; Docker example):
+docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=agentmail postgres:16
+export DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/agentmail"
+alembic upgrade head
+
+# Run the relay (single worker — the key vault is per-process memory):
+uvicorn relay.app:app --port 10000
+```
+
+Tests (DB-backed tests run when `TEST_DATABASE_URL` points at a scratch
+Postgres; without it they skip and only the crypto/vault suites run):
+
+```bash
+export TEST_DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/agentmail_test"
+pytest                  # ruff check . for lint
+```
+
+**Operational notes:** Render restarts cause a ~30-60 s cold start; Neon
+Postgres autosuspends after ~5 min idle and resumes in under a second on
+the next real query. Both are invisible at mail-application latencies.
+
+---
+
 ## 📄 License
 
 MIT

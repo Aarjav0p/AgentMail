@@ -1,0 +1,21 @@
+name: Purge expired data
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Call purge endpoint
+        env:
+          RELAY_URL: ${{ secrets.RELAY_URL }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+        run: |
+          curl -fsSL \
+            -X POST \
+            -H "X-Admin-Token: $ADMIN_TOKEN" \
+            "$RELAY_URL/v1/admin/purge"
