@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     # --- Admin ---
     admin_token: str = ""
 
+    # --- Dashboard / Supabase (DASH-01) ---
+    supabase_url: str = "https://example.supabase.co"
+    supabase_jwt_secret: str = ""
+    encryption_key: str = ""
+    cors_origins: str = "http://localhost:5173"
+
     # --- Server ---
     host: str = "0.0.0.0"
     port: int = 10000  # Render default

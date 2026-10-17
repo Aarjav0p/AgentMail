@@ -18,6 +18,7 @@ pynacl>=1.5,<2
 
 # --- Auth / Rate Limiting ---
 slowapi>=0.1.9,<1
+pyjwt>=2.8,<3
 
 # --- MCP ---
 mcp[cli]>=1.9,<2

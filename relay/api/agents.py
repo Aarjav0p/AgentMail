@@ -1,4 +1,5 @@
 """Agent registration — ``POST /v1/agents`` (§4.2)."""
+
 from __future__ import annotations
 
 import base64
@@ -15,6 +16,7 @@ from relay.crypto.envelope import generate_api_key, generate_fingerprint, hash_a
 from relay.db import get_db
 from relay.models.schema import Agent, AuditLog
 from relay.ratelimit import limiter
+from relay.reserved import is_reserved_handle
 
 router = APIRouter(prefix="/v1")
 
@@ -44,6 +46,8 @@ class RegisterRequest(BaseModel):
                 "Handle must be 3-32 chars, lowercase alphanumeric + hyphens, "
                 "starting with a letter or digit."
             )
+        if is_reserved_handle(v):
+            raise ValueError(f"Handle '{v}' is reserved.")
         return v
 
     @field_validator("display_name")

@@ -13,6 +13,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -55,11 +56,19 @@ class Agent(Base):
         DateTime(timezone=True), nullable=True
     )
     owner_user_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
+    custody_mode: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'user_passphrase'")
+    )
+    api_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         CheckConstraint(
             r"handle ~ '^[a-z0-9][a-z0-9\-]{2,31}$'",
             name="agents_handle_format_ck",
+        ),
+        CheckConstraint(
+            "custody_mode IN ('user_passphrase', 'server_kek')",
+            name="agents_custody_mode_ck",
         ),
         Index(
             "agents_handle_live_idx",
@@ -73,6 +82,42 @@ class Agent(Base):
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
+        Index(
+            "agents_owner_one_idx",
+            "owner_user_id",
+            unique=True,
+            postgresql_where=text("owner_user_id IS NOT NULL"),
+        ),
+    )
+
+
+class UserContact(Base):
+    """The account's contact-alias address book — §6.7."""
+
+    __tablename__ = "user_contacts"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    alias: Mapped[str] = mapped_column(Text, nullable=False)
+    target_handle: Mapped[str] = mapped_column(Text, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            r"alias ~ '^[a-z0-9][a-z0-9_\-]{1,31}$'",
+            name="user_contacts_alias_format_ck",
+        ),
+        CheckConstraint(
+            r"target_handle ~ '^[a-z0-9][a-z0-9\-]{2,31}$'",
+            name="user_contacts_target_handle_format_ck",
+        ),
+        UniqueConstraint("owner_user_id", "alias", name="user_contacts_owner_alias_key"),
     )
 
 

@@ -5,6 +5,7 @@ by design.  On success the resolved agent + a fresh DB session are bound
 to a ContextVar that tool wrappers read; on failure a JSON 401 is
 returned without ever reaching the MCP machinery.
 """
+
 from __future__ import annotations
 
 from sqlalchemy import select
@@ -45,12 +46,17 @@ class MCPAuthMiddleware:
         request = Request(scope)
         auth_header = request.headers.get("authorization", "")
         token_value = (
-            auth_header.removeprefix("Bearer ").strip()
-            if auth_header.startswith("Bearer ")
-            else ""
+            auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else ""
         )
         if not token_value:
             await _unauthorized(scope, send, "Missing or malformed Authorization header.")
+            return
+        if not token_value.startswith("am_live_"):
+            await _unauthorized(
+                scope,
+                send,
+                "Invalid API key format. Agent API keys must start with 'am_live_'.",
+            )
             return
 
         async with db_module.async_session() as session:

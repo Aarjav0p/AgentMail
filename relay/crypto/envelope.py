@@ -6,22 +6,68 @@ left to :pymod:`relay.crypto.vault`.
 
 Uses PyNaCl (libsodium) exclusively for cryptographic primitives.
 """
+
 from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import secrets
 
+import nacl.secret
 from nacl.public import PrivateKey, PublicKey, SealedBox
 from nacl.signing import SigningKey, VerifyKey
+
+from relay.config import settings
 
 # -- Base62 alphabet used for API key generation -------------------------
 _BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 
 # -----------------------------------------------------------------------
+# Server KEK helpers (§4)
+# -----------------------------------------------------------------------
+
+
+def get_server_kek_bytes() -> bytes:
+    """Return decoded 32-byte server KEK from settings."""
+    if not settings.encryption_key:
+        raise ValueError("ENCRYPTION_KEY is not configured.")
+    key = base64.b64decode(settings.encryption_key)
+    if len(key) != 32:
+        raise ValueError("ENCRYPTION_KEY must be exactly 32 bytes (base64-encoded).")
+    return key
+
+
+def encrypt_server_kek(plaintext: str) -> str:
+    """Encrypt plaintext string with the server KEK using SecretBox."""
+    kek = get_server_kek_bytes()
+    box = nacl.secret.SecretBox(kek)
+    return base64.b64encode(bytes(box.encrypt(plaintext.encode("utf-8")))).decode("ascii")
+
+
+def decrypt_server_kek(ciphertext_b64: str) -> str:
+    """Decrypt a base64-encoded ciphertext using the server KEK."""
+    kek = get_server_kek_bytes()
+    box = nacl.secret.SecretBox(kek)
+    return box.decrypt(base64.b64decode(ciphertext_b64)).decode("utf-8")
+
+
+def decrypt_server_kek_blob(key_blob_b64: str) -> tuple[bytes, bytes] | None:
+    """Decrypt a server-custody key blob and return (enc_sk, sign_sk)."""
+    try:
+        blob_plaintext = decrypt_server_kek(key_blob_b64)
+        blob = json.loads(blob_plaintext)
+        current = blob["epochs"][-1]
+        return bytes.fromhex(current["enc_sk"]), bytes.fromhex(current["sign_sk"])
+    except Exception:
+        return None
+
+
+# -----------------------------------------------------------------------
 # Fingerprint
 # -----------------------------------------------------------------------
+
 
 def generate_fingerprint(enc_pub_hex: str, sign_pub_hex: str) -> str:
     """Produce a human-readable fingerprint from an agent's public keys.
@@ -47,6 +93,7 @@ def generate_fingerprint(enc_pub_hex: str, sign_pub_hex: str) -> str:
 # -----------------------------------------------------------------------
 # Sealed-box encrypt / decrypt
 # -----------------------------------------------------------------------
+
 
 def seal_message(payload_json: str, recipient_enc_pub_hex: str) -> str:
     """Encrypt *payload_json* to the recipient's X25519 public key.
@@ -85,6 +132,7 @@ def open_message(ciphertext_b64: str, recipient_enc_sk_bytes: bytes) -> str:
 # -----------------------------------------------------------------------
 # Ed25519 signing
 # -----------------------------------------------------------------------
+
 
 def sign_ciphertext(ciphertext_bytes: bytes, sender_sign_sk_bytes: bytes) -> str:
     """Create a detached Ed25519 signature over *ciphertext_bytes*.
@@ -130,6 +178,7 @@ def verify_signature(
 # -----------------------------------------------------------------------
 # API key helpers
 # -----------------------------------------------------------------------
+
 
 def hash_api_key(api_key: str) -> str:
     """Return the SHA-256 hex digest of *api_key*.

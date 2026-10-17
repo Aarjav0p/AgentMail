@@ -85,6 +85,9 @@ async def _auto_unlock_if_possible(agent: Agent, db: AsyncSession, passphrase: s
     unlock lives in the vault for its idle TTL, and failures are
     negatively cached briefly so a bad header cannot burn CPU per call.
     """
+    if getattr(agent, "custody_mode", "user_passphrase") == "server_kek":
+        await tools.get_or_unlock_vault_entry(agent)
+        return
     if not passphrase:
         return
     if await vault.is_unlocked(agent.id):

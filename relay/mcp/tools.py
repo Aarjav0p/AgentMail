@@ -22,13 +22,14 @@ from uuid_utils import uuid7
 
 from relay.config import settings
 from relay.crypto.envelope import (
+    decrypt_server_kek_blob,
     generate_fingerprint,
     open_message,
     seal_message,
     sign_ciphertext,
     verify_signature,
 )
-from relay.crypto.vault import vault
+from relay.crypto.vault import VaultEntry, vault
 from relay.mcp.contacts import find_contact_alias, load_alias_map
 from relay.models.schema import Agent, AuditLog, Message
 
@@ -139,6 +140,20 @@ async def store_keys_in_vault(agent: Agent, enc_sk: bytes, sign_sk: bytes) -> No
     )
 
 
+async def get_or_unlock_vault_entry(agent: Agent) -> VaultEntry | None:
+    """Return vault entry, auto-unlocking server_kek custody agents on demand (§4)."""
+    entry = await vault.get(agent.id)
+    if entry is not None:
+        return entry
+    if getattr(agent, "custody_mode", "user_passphrase") == "server_kek":
+        keys = decrypt_server_kek_blob(agent.key_blob)
+        if keys is not None:
+            enc_sk, sign_sk = keys
+            await store_keys_in_vault(agent, enc_sk, sign_sk)
+            return await vault.get(agent.id)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Tool 1: unlock_keychain
 # ---------------------------------------------------------------------------
@@ -146,6 +161,15 @@ async def store_keys_in_vault(agent: Agent, enc_sk: bytes, sign_sk: bytes) -> No
 
 async def unlock_keychain(db: AsyncSession, agent: Agent, passphrase: str) -> dict[str, Any]:
     """Decrypt the key blob into the in-memory vault (§4.2)."""
+    if getattr(agent, "custody_mode", "user_passphrase") == "server_kek":
+        await get_or_unlock_vault_entry(agent)
+        return {
+            "result": {
+                "unlocked": True,
+                "note": "This agent uses server-side key custody; no passphrase is required.",
+            }
+        }
+
     keys = await asyncio.to_thread(derive_private_keys, agent, passphrase)
     if keys is None:
         db.add(AuditLog(agent_id=agent.id, event="unlock_fail"))
@@ -172,6 +196,8 @@ async def unlock_keychain(db: AsyncSession, agent: Agent, passphrase: str) -> di
 
 async def keychain_status(db: AsyncSession, agent: Agent) -> dict[str, Any]:
     """Let the model self-check before crypto operations."""
+    if getattr(agent, "custody_mode", "user_passphrase") == "server_kek":
+        await get_or_unlock_vault_entry(agent)
     unlocked = await vault.is_unlocked(agent.id)
     auto_lock = await vault.auto_lock_at(agent.id) if unlocked else None
     return {
@@ -249,7 +275,7 @@ async def send_message(
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Seal + sign + store a message (§3.3)."""
-    entry = await vault.get(agent.id)
+    entry = await get_or_unlock_vault_entry(agent)
     if entry is None:
         return keychain_locked_response()
 
@@ -268,9 +294,7 @@ async def send_message(
         return error_response("VALIDATION_ERROR", "Body must not contain NUL bytes.")
 
     # -- resolve recipient & contact alias (ALIAS-01) ------------------------
-    effective_to, resolved_alias = await find_contact_alias(
-        db, getattr(agent, "owner_user_id", None), to
-    )
+    effective_to, resolved_alias = await find_contact_alias(db, agent.owner_user_id, to)
     recipient_handle = _canonical_recipient(effective_to)
     result = await db.execute(
         select(Agent).where(Agent.handle == recipient_handle, Agent.deleted_at.is_(None))
@@ -460,9 +484,9 @@ async def check_inbox(
     rows = rows[:limit]
 
     sender_map = await _handle_map(db, {row.sender_id for row in rows})
-    entry = await vault.get(agent.id)
+    entry = await get_or_unlock_vault_entry(agent)
     unlocked = entry is not None
-    alias_map = await load_alias_map(db, getattr(agent, "owner_user_id", None))
+    alias_map = await load_alias_map(db, agent.owner_user_id)
 
     messages: list[dict[str, Any]] = []
     for msg in rows:
@@ -501,7 +525,7 @@ async def check_inbox(
 
 async def read_message(db: AsyncSession, agent: Agent, message_id: str) -> dict[str, Any]:
     """Verify signature + decrypt + mark read (§3.4)."""
-    entry = await vault.get(agent.id)
+    entry = await get_or_unlock_vault_entry(agent)
     if entry is None:
         return keychain_locked_response()
 
@@ -538,7 +562,7 @@ async def read_message(db: AsyncSession, agent: Agent, message_id: str) -> dict[
     recipient_handle = recipient_result.scalar_one_or_none()
 
     sender_addr = _address(sender.handle) if sender else "unknown"
-    alias_map = await load_alias_map(db, getattr(agent, "owner_user_id", None))
+    alias_map = await load_alias_map(db, agent.owner_user_id)
 
     result_payload: dict[str, Any] = {
         "id": msg.id,
@@ -603,7 +627,7 @@ async def reply(
     subject: str | None = None,
 ) -> dict[str, Any]:
     """In-thread reply — sugar over send_message (§5.6)."""
-    entry = await vault.get(agent.id)
+    entry = await get_or_unlock_vault_entry(agent)
     if entry is None:
         return keychain_locked_response()
 
@@ -672,7 +696,7 @@ async def get_thread(
         agent_ids.add(row.recipient_id)
     agent_map = await _handle_map(db, agent_ids)
 
-    entry = await vault.get(agent.id)
+    entry = await get_or_unlock_vault_entry(agent)
     unlocked = entry is not None
 
     messages: list[dict[str, Any]] = []

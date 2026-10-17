@@ -5,6 +5,7 @@ Three surfaces on one instance:
 * ``/v1/*``              — REST (register, whois, reissue, health, admin)
 * ``GET /register``      — browser key-generation page (static HTML + vendored libs)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -12,13 +13,17 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from slowapi.errors import RateLimitExceeded
 from slowapi.extension import _rate_limit_exceeded_handler
 from starlette.staticfiles import StaticFiles
 
-from relay.api import admin, agents, health, reissue, whois
+from relay.api import account, admin, agents, health, reissue, whois
+from relay.api.account import AccountError
+from relay.config import settings
 from relay.crypto.vault import vault
 from relay.mcp.auth import MCPAuthMiddleware
 from relay.mcp.server import mcp_server
@@ -58,12 +63,60 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="agentmail", version="0.1.0", lifespan=lifespan)
 
+# CORS middleware (§7.2) — allowlist origins from CORS_ORIGINS
+cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.exception_handler(AccountError)
+async def account_error_handler(request: Request, exc: AccountError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": exc.code, "message": exc.message}},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    if request.url.path.startswith("/v1/account"):
+        msg = exc.errors()[0]["msg"] if exc.errors() else "Validation error."
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"code": "VALIDATION_ERROR", "message": msg}},
+        )
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()},
+    )
+
+
+async def _custom_rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    if request.url.path.startswith("/v1/account"):
+        return JSONResponse(
+            status_code=429,
+            content={
+                "error": {
+                    "code": "RATE_LIMITED",
+                    "message": "Rate limit exceeded - wait and retry.",
+                }
+            },
+        )
+    return _rate_limit_exceeded_handler(request, exc)
+
+
 # REST rate limiting (§8.1) — decorators live on the routes; the handler
 # turns breaches into clean 429s across the app.
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, _custom_rate_limit_handler)
 
 app.include_router(health.router)
+app.include_router(account.router)
 app.include_router(agents.router)
 app.include_router(whois.router)
 app.include_router(reissue.router)
