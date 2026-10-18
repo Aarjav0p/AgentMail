@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Sequence, Union
 
 from alembic import op
+import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "b2c3d4e5f6a1"
@@ -19,14 +20,60 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _auth_users_exists() -> bool:
+    """Report whether the ``auth.users`` table already exists.
+
+    Supabase owns the ``auth`` schema (owner: ``supabase_auth_admin``) and
+    does not grant CREATE on it to the project's ``postgres`` role.
+    PostgreSQL checks schema CREATE privileges *before* the IF NOT EXISTS
+    existence shortcut, so an unconditional ``CREATE TABLE IF NOT EXISTS
+    auth.users`` fails on Supabase with ``permission denied for schema
+    auth`` even though the table already exists there (managed by Supabase
+    Auth). ``to_regclass()`` only needs USAGE on the schema — which Supabase
+    does grant — making it the safe probe for the Supabase-managed table.
+    """
+    return bool(
+        op.get_bind()
+        .execute(sa.text("SELECT to_regclass('auth.users') IS NOT NULL"))
+        .scalar()
+    )
+
+
+def _may_reference_auth_users() -> bool:
+    """Report whether the current role may create FKs to ``auth.users``.
+
+    Supabase grants ``postgres`` REFERENCES on ``auth.users`` (the canonical
+    ``references auth.users`` pattern from their docs). On databases that
+    withhold the privilege, the migration should still succeed: columns and
+    tables are then created without the FK constraints instead of failing.
+    """
+    return bool(
+        op.get_bind()
+        .execute(
+            sa.text(
+                "SELECT CASE WHEN to_regclass('auth.users') IS NULL THEN false "
+                "ELSE has_table_privilege('auth.users', 'REFERENCES') END"
+            )
+        )
+        .scalar()
+    )
+
+
 def upgrade() -> None:
     # ── Ensure auth.users stub exists for environments without Supabase auth ──
-    op.execute("CREATE SCHEMA IF NOT EXISTS auth")
-    op.execute("CREATE TABLE IF NOT EXISTS auth.users (id UUID PRIMARY KEY)")
+    # On Supabase, auth.users already exists and cannot (and must not) be
+    # created by this migration — see _auth_users_exists().
+    if not _auth_users_exists():
+        op.execute("CREATE SCHEMA IF NOT EXISTS auth")
+        op.execute("CREATE TABLE IF NOT EXISTS auth.users (id UUID PRIMARY KEY)")
+
+    # FK clauses are only emitted when the current role may reference auth.users.
+    users_fk = " REFERENCES auth.users(id)" if _may_reference_auth_users() else ""
+    users_fk_cascade = users_fk + " ON DELETE CASCADE" if users_fk else ""
 
     # ── agents additions ────────────────────────────────────────────────
     op.execute(
-        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES auth.users(id)"
+        f"ALTER TABLE agents ADD COLUMN IF NOT EXISTS owner_user_id UUID{users_fk}"
     )
     op.execute(
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS custody_mode TEXT NOT NULL DEFAULT 'user_passphrase'"
@@ -51,10 +98,10 @@ def upgrade() -> None:
     )
 
     # ── user_contacts ───────────────────────────────────────────────────
-    op.execute("""
+    op.execute(f"""
         CREATE TABLE IF NOT EXISTS user_contacts (
             id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            owner_user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+            owner_user_id UUID NOT NULL{users_fk_cascade},
             alias         TEXT NOT NULL CHECK (alias ~ '^[a-z0-9][a-z0-9_-]{1,31}$'),
             target_handle TEXT NOT NULL CHECK (target_handle ~ '^[a-z0-9][a-z0-9-]{2,31}$'),
             note          TEXT,
