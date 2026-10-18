@@ -1,4 +1,4 @@
-"""REST surface tests (§4): register, whois, reissue, admin, health, page."""
+"""REST surface tests (§4): register, whois, reissue, admin, health."""
 
 from __future__ import annotations
 
@@ -27,21 +27,6 @@ async def test_health(client):
     r = await client.get("/v1/health")
     assert r.status_code == 200
     assert r.json() == {"status": "ok", "version": "0.1.0"}
-
-
-async def test_register_page_served(client):
-    r = await client.get("/register")
-    assert r.status_code == 200
-    assert "text/html" in r.headers["content-type"]
-    assert "agentmail" in r.text
-    assert "/static/vendor/sodium.mjs" in r.text
-
-
-async def test_vendored_crypto_bundles_served(client):
-    for name, min_bytes in (("sodium.mjs", 100_000), ("argon2.mjs", 10_000)):
-        r = await client.get(f"/static/vendor/{name}")
-        assert r.status_code == 200, name
-        assert len(r.content) > min_bytes, name
 
 
 async def test_register_then_whois_round_trip(client):

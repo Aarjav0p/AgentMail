@@ -1,9 +1,8 @@
 """agentmail relay — the single FastAPI application (§3.2).
 
-Three surfaces on one instance:
+Two surfaces on one instance:
 * ``POST /mcp``          — remote MCP server (stateless streamable HTTP, Bearer)
 * ``/v1/*``              — REST (register, whois, reissue, health, admin)
-* ``GET /register``      — browser key-generation page (static HTML + vendored libs)
 """
 
 from __future__ import annotations
@@ -11,15 +10,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 from slowapi.extension import _rate_limit_exceeded_handler
-from starlette.staticfiles import StaticFiles
 
 from relay.api import account, admin, agents, health, reissue, whois
 from relay.api.account import AccountError
@@ -30,8 +27,6 @@ from relay.mcp.server import mcp_server
 from relay.ratelimit import limiter
 
 logger = logging.getLogger("agentmail")
-
-_STATIC_DIR = Path(__file__).parent / "static"
 
 # The MCP streamable-HTTP ASGI app, wrapped with Bearer auth.  Built once
 # at import so ``mcp_server.session_manager`` exists for the lifespan.
@@ -132,15 +127,6 @@ app.include_router(agents.router)
 app.include_router(whois.router)
 app.include_router(reissue.router)
 app.include_router(admin.router)
-
-
-@app.get("/register", include_in_schema=False)
-async def register_page() -> FileResponse:
-    """The browser registration / recovery / export page (§4.2)."""
-    return FileResponse(_STATIC_DIR / "register.html")
-
-
-app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 # Mounted last: the MCP app owns everything else (its streamable-HTTP
 # route is ``/mcp``), so REST/documentation routes above always win.
