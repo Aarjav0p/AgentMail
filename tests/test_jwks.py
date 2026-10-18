@@ -56,6 +56,7 @@ def mint_es256_token(
     payload = {
         "sub": sub,
         "iss": issuer,
+        "aud": "authenticated",  # mimic real production tokens (Task 20)
         "exp": int((now + datetime.timedelta(minutes=exp_minutes)).timestamp()),
         "iat": int(now.timestamp()),
         "email": f"{sub}@example.com",
@@ -175,7 +176,16 @@ def _disable_rest_rate_limits():
     limiter.enabled = True
 
 
-@pytest.mark.usefixtures("fake_jwks")
+async def test_es256_token_with_aud_claim_verifies(fake_jwks):
+    """Regression (Task 20): real tokens carry an aud claim; production saw
+    'Invalid audience' because decode had no audience configured. The relay
+    must verify signature/issuer/expiry while tolerating any aud value."""
+    # mint_es256_token includes aud='authenticated' since Task 20.
+    claims = verify_dashboard_token(mint_es256_token("user-aud"))
+    assert claims["sub"] == "user-aud"
+    assert claims.get("aud") == "authenticated"
+
+
 async def test_es256_end_to_end_account_agents(client, db, fake_jwks):
     """The exact production wire: ES256 bearer token on GET /v1/account/agents."""
     token = mint_es256_token(str(uuid7()))

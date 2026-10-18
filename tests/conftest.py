@@ -54,6 +54,7 @@ def mint_test_jwt(
     payload = {
         "sub": sub,
         "iss": issuer,
+        "aud": "authenticated",  # real Supabase tokens carry aud; relay must not enforce it
         "exp": int((now + datetime.timedelta(minutes=exp_minutes)).timestamp()),
         "iat": int(now.timestamp()),
         "email": f"{sub}@example.com",

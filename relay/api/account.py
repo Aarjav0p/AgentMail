@@ -114,7 +114,13 @@ def verify_dashboard_token(raw: str) -> dict[str, Any]:
                 key=settings.supabase_jwt_secret,
                 algorithms=["HS256"],
                 issuer=issuer,
-                options={"require": ["exp", "sub", "iss"]},
+                # Supabase tokens carry a Supabase-scoped aud claim (e.g.
+                # "authenticated") that is meaningless to this relay; PyJWT
+                # raises InvalidAudienceError when a token has aud but no
+                # audience is configured. We are a downstream resource server:
+                # signature + issuer bind the token to the project, so aud is
+                # intentionally not enforced here.
+                options={"require": ["exp", "sub", "iss"], "verify_aud": False},
             )
         except Exception as exc:
             raise AccountError(
@@ -132,7 +138,9 @@ def verify_dashboard_token(raw: str) -> dict[str, Any]:
                 key=key,
                 algorithms=[alg],
                 issuer=issuer,
-                options={"require": ["exp", "sub", "iss"]},
+                # See HS256 branch: real Supabase tokens carry an aud claim;
+                # enforce signature/issuer/expiry but not audience.
+                options={"require": ["exp", "sub", "iss"], "verify_aud": False},
             )
         except Exception as exc:
             logger.warning(
