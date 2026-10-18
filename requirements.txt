@@ -15,6 +15,7 @@ greenlet>=3.1  # needed by SQLAlchemy async
 
 # --- Crypto ---
 pynacl>=1.5,<2
+cryptography>=45,<51  # asymmetric (ES256/EdDSA) JWT verification via PyJWT
 
 # --- Auth / Rate Limiting ---
 slowapi>=0.1.9,<1

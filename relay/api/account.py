@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import re
 from typing import Any
 
@@ -22,6 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from relay.api.jwks import ASYM_ALGS, get_verification_key
 from relay.config import settings
 from relay.crypto.envelope import (
     decrypt_server_kek,
@@ -36,6 +38,8 @@ from relay.ratelimit import limiter
 from relay.reserved import is_reserved_handle
 
 router = APIRouter(prefix="/v1/account")
+
+logger = logging.getLogger(__name__)
 
 _HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,31}$")
 _ALIAS_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
@@ -70,35 +74,84 @@ def get_account_user_id(request: Request) -> str:
 
 
 def verify_dashboard_token(raw: str) -> dict[str, Any]:
-    """Verify Supabase JWT token using HS256 and SUPABASE_JWT_SECRET (§5.2)."""
+    """Verify a Supabase access token (§5.2).
+
+    Two branches, chosen from the token's unverified ``alg`` header:
+
+    * ``HS256`` — legacy shared-secret path (SUPABASE_JWT_SECRET).
+    * ``ES256`` / ``RS256`` / ``EdDSA`` — asymmetric signing keys, verified
+      against the project JWKS at ``{SUPABASE_URL}/auth/v1/.well-known/jwks.json``
+      (new Supabase projects issue ES256 tokens by default).
+    """
     if raw.startswith("am_live_"):
         raise AccountError(
             status.HTTP_401_UNAUTHORIZED,
             "UNAUTHORIZED",
             "API keys cannot be used to authenticate account endpoints. Supabase JWT required.",
         )
-    if not settings.supabase_jwt_secret:
-        raise AccountError(
-            status.HTTP_401_UNAUTHORIZED,
-            "UNAUTHORIZED",
-            "Supabase JWT secret is not configured.",
-        )
     issuer = f"{settings.supabase_url.rstrip('/')}/auth/v1"
     try:
-        claims = jwt.decode(
-            raw,
-            key=settings.supabase_jwt_secret,
-            algorithms=["HS256"],
-            issuer=issuer,
-            options={"require": ["exp", "sub", "iss"]},
-        )
-        return claims
+        header = jwt.get_unverified_header(raw)
     except Exception as exc:
         raise AccountError(
             status.HTTP_401_UNAUTHORIZED,
             "UNAUTHORIZED",
             "Invalid or expired authentication token.",
         ) from exc
+
+    alg = header.get("alg") or ""
+
+    if alg == "HS256":
+        if not settings.supabase_jwt_secret:
+            raise AccountError(
+                status.HTTP_401_UNAUTHORIZED,
+                "UNAUTHORIZED",
+                "Supabase JWT secret is not configured.",
+            )
+        try:
+            return jwt.decode(
+                raw,
+                key=settings.supabase_jwt_secret,
+                algorithms=["HS256"],
+                issuer=issuer,
+                options={"require": ["exp", "sub", "iss"]},
+            )
+        except Exception as exc:
+            raise AccountError(
+                status.HTTP_401_UNAUTHORIZED,
+                "UNAUTHORIZED",
+                "Invalid or expired authentication token.",
+            ) from exc
+
+    if alg in ASYM_ALGS:
+        kid = header.get("kid") or ""
+        try:
+            key = get_verification_key(alg, kid)
+            return jwt.decode(
+                raw,
+                key=key,
+                algorithms=[alg],
+                issuer=issuer,
+                options={"require": ["exp", "sub", "iss"]},
+            )
+        except Exception as exc:
+            logger.warning(
+                "Asymmetric token verification failed (alg=%s kid=%r): %s",
+                alg,
+                kid,
+                exc,
+            )
+            raise AccountError(
+                status.HTTP_401_UNAUTHORIZED,
+                "UNAUTHORIZED",
+                "Invalid or expired authentication token.",
+            ) from exc
+
+    raise AccountError(
+        status.HTTP_401_UNAUTHORIZED,
+        "UNAUTHORIZED",
+        f"Unsupported token algorithm {alg!r}.",
+    )
 
 
 async def get_current_user_sub(request: Request) -> str:
