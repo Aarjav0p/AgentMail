@@ -4,6 +4,10 @@ Every ``POST /mcp`` request is authenticated independently — stateless
 by design.  On success the resolved agent + a fresh DB session are bound
 to a ContextVar that tool wrappers read; on failure a JSON 401 is
 returned without ever reaching the MCP machinery.
+
+Tokens may be presented three ways (see :func:`_extract_token`):
+``Authorization: Bearer am_live_…`` (canonical), a bare
+``Authorization: am_live_…``, or ``X-API-Key: am_live_…``.
 """
 
 from __future__ import annotations
@@ -32,6 +36,34 @@ async def _unauthorized(scope: Scope, send: Send, message: str) -> None:
     await response(scope, receive=None, send=send)  # type: ignore[arg-type]
 
 
+def _extract_token(auth_header: str, api_key_header: str) -> str:
+    """Extract the raw ``am_live_…`` token from a request's auth headers.
+
+    Accepted presentations (in priority order):
+
+    1. ``Authorization: Bearer <key>`` — the canonical, MCP-spec form
+       (scheme matched case-insensitively per RFC 7235).
+    2. ``Authorization: <key>`` — a bare key with no auth scheme, for
+       minimal clients that pass the key through verbatim.
+    3. ``X-API-Key: <key>`` — for clients whose dedicated API-key field
+       sends that header (the pattern used by Anthropic's and Azure's
+       APIs).
+
+    Query-string parameters are deliberately NOT accepted: keys in URLs
+    leak into server logs, proxies, and browser history.
+    """
+    token = ""
+    if auth_header:
+        scheme, _, value = auth_header.partition(" ")
+        if scheme.lower() == "bearer":
+            token = value.strip()
+        elif auth_header.startswith("am_live_"):
+            token = auth_header.strip()
+    if not token:
+        token = api_key_header.strip()
+    return token
+
+
 class MCPAuthMiddleware:
     """ASGI middleware: ``Authorization: Bearer am_live_…`` → agent context."""
 
@@ -44,12 +76,18 @@ class MCPAuthMiddleware:
             return
 
         request = Request(scope)
-        auth_header = request.headers.get("authorization", "")
-        token_value = (
-            auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else ""
+        token_value = _extract_token(
+            request.headers.get("authorization", ""),
+            request.headers.get("x-api-key", ""),
         )
         if not token_value:
-            await _unauthorized(scope, send, "Missing or malformed Authorization header.")
+            await _unauthorized(
+                scope,
+                send,
+                "Missing or malformed Authorization header. Send "
+                "'Authorization: Bearer am_live_…' (a bare am_live_… value "
+                "or an X-API-Key header is also accepted).",
+            )
             return
         if not token_value.startswith("am_live_"):
             await _unauthorized(

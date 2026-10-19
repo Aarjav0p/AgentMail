@@ -14,10 +14,12 @@ async def get_current_agent(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> Agent:
-    """Resolve a Bearer token to a live Agent row.
+    """Resolve an agent API key to a live Agent row.
 
-    Extracts ``Authorization: Bearer am_live_...`` from the request,
-    SHA-256 hashes the raw token, and looks up the ``agents`` table.
+    Extracts the key from ``Authorization: Bearer am_live_...`` (canonical),
+    a bare ``Authorization: am_live_...``, or ``X-API-Key: am_live_...`` —
+    mirroring :func:`relay.mcp.auth._extract_token` — then SHA-256 hashes
+    the raw token and looks up the ``agents`` table.
 
     Also stashes ``X-Agentmail-Passphrase`` (if present) on
     ``request.state.passphrase`` for downstream MCP auto-unlock.
@@ -26,17 +28,22 @@ async def get_current_agent(
         HTTPException 401: missing / invalid token, or agent deleted.
     """
     auth_header: str | None = request.headers.get("authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or malformed Authorization header.",
-        )
+    api_key_header: str = request.headers.get("x-api-key", "")
 
-    raw_token = auth_header.removeprefix("Bearer ").strip()
+    raw_token = ""
+    if auth_header:
+        scheme, _, value = auth_header.partition(" ")
+        if scheme.lower() == "bearer":
+            raw_token = value.strip()
+        elif auth_header.startswith("am_live_"):
+            raw_token = auth_header.strip()
+    if not raw_token:
+        raw_token = api_key_header.strip()
+
     if not raw_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Empty bearer token.",
+            detail="Missing or malformed Authorization header.",
         )
 
     token_hash = hash_api_key(raw_token)

@@ -44,6 +44,27 @@ async def test_mcp_streamable_http_end_to_end(db):
             )
             assert r.status_code == 401
 
+            # unknown auth scheme must not be mistaken for a bare key
+            r = await http.post(
+                "/mcp",
+                json=_INIT,
+                headers={**_ACCEPT, "Authorization": f"Basic {api_key}"},
+            )
+            assert r.status_code == 401
+
+            # -- accepted token presentations ------------------------------------
+            # Bearer is canonical; bare key, X-API-Key, lowercase scheme, and
+            # extra whitespace are accepted for clients with dedicated
+            # API-key fields or minimal header handling.
+            for alt_auth in (
+                {"Authorization": api_key},
+                {"Authorization": f"bearer {api_key}"},
+                {"X-API-Key": api_key},
+                {"Authorization": f"Bearer  {api_key}"},
+            ):
+                r = await http.post("/mcp", json=_INIT, headers={**_ACCEPT, **alt_auth})
+                assert r.status_code == 200, (alt_auth, r.text)
+
             # -- initialize ------------------------------------------------------
             r = await http.post("/mcp", json=_INIT, headers=auth)
             assert r.status_code == 200, r.text
