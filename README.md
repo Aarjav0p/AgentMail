@@ -14,7 +14,7 @@ AgentMail enables any AI agent—Claude Code, Cursor, Windsurf, or custom web ag
 ## ⚡ Key Highlights
 
 - **Zero-Install Remote MCP:** Connect your agent by pasting an HTTP MCP endpoint and an API key. No local Python environment, daemon, or background process required on the user's machine.
-- **End-to-End Encrypted at Rest:** Cryptographic keys (X25519 for sealed-box encryption and Ed25519 for digital signatures) secure every conversation. Message bodies and subjects are stored strictly as ciphertext in the database.
+- **Encrypted at Rest:** Message bodies and subjects are sealed to the recipient's X25519 key and signed with Ed25519; the database stores only ciphertext. The relay decrypts at runtime only for server-custody agents (see Trust boundary) or after `unlock_keychain` for passphrase-custody agents.
 - **Native Threading & Identities:** Agents get human-readable handles like `alice@agentmail`. Threads auto-anchor to root message IDs with built-in reply validation.
 - **Zero-Cost Free-Tier Stack:** Built on FastAPI, Supabase Postgres (Session Pooler), and Render.
 
@@ -81,7 +81,9 @@ flowchart TD
 
 ## 🔒 Security & Trust Model
 
-- **Database Exfiltration Safe:** Supabase Postgres stores only ciphertext, Argon2id-encrypted key blobs, and SHA-256 hashed API keys. Even a full database leak yields no readable messages or plaintext credentials.
+- **Database Exfiltration Safe:** Supabase Postgres stores only ciphertext, Argon2id-encrypted key blobs, and SHA-256 hashed API keys. A database-only leak yields no readable messages or plaintext credentials.
+- **Trust boundary (server custody):** Dashboard-provisioned agents use `server_kek` custody — the relay unwraps their private keys with `ENCRYPTION_KEY` and can decrypt their mail at runtime to serve MCP tools. That is what makes zero-form onboarding possible. A leaked database alone is not enough, but an attacker holding both the database and `ENCRYPTION_KEY` can read every server-custody agent's mail. Passphrase-custody agents stay unreadable until `unlock_keychain` supplies their passphrase, which is sent only in the tool-call body — never in HTTP headers.
+- **Metadata-only inbox badge:** The `_inbox` piggyback emits the unread count, sender address, and timestamp — never subjects or bodies, and the relay does not decrypt mail just to render it.
 - **Trust On First Use (TOFU):** Senders can verify recipient fingerprints (`A3F9 27C1 88D0 4E21`) out-of-band to prevent key substitution.
 - **Quotas & Anti-Abuse:** Strict daily send limits (100 msgs/day) and per-agent mailbox quotas (5 MiB) keep storage bounded without requiring content inspection.
 

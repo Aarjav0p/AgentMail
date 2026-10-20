@@ -24,7 +24,7 @@ async def test_footer_emits_once_per_state_change(db):
     r1 = await call_tool(db, bob, "whois", handle="alice-pig")
     assert r1["_inbox"]["unread"] == 1
     assert r1["_inbox"]["latest"]["from"] == "alice-pig@agentmail"
-    assert r1["_inbox"]["latest"]["subject"] == "Ping"
+    assert "subject" not in r1["_inbox"]["latest"]
     assert "check_inbox" in r1["_inbox"]["hint"]
 
     # Same state again → no footer.
@@ -80,12 +80,10 @@ async def test_explicit_true_flag_still_emits(db):
     assert r["_inbox"]["unread"] == 1
 
 
-async def test_footer_hides_subject_when_keychain_locked(db):
-    alice, _ = await insert_agent(db, "alice-pig")
-    bob, _ = await insert_agent(db, "bob-pig2")
-    await call_tool(db, alice, "unlock_keychain", passphrase=TEST_PASSPHRASE)
-    await call_tool(db, alice, "send_message", to="bob-pig2", subject="Top Secret", body="1")
+async def test_footer_never_includes_subject(db):
+    alice, bob = await setup_pair(db)
+    await call_tool(db, alice, "send_message", to="bob-pig", subject="Top Secret", body="1")
 
-    r = await call_tool(db, bob, "keychain_status")  # bob locked
+    r = await call_tool(db, bob, "keychain_status")  # bob is unlocked
     assert r["_inbox"]["unread"] == 1
     assert "subject" not in r["_inbox"]["latest"]

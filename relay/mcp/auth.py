@@ -109,11 +109,7 @@ class MCPAuthMiddleware:
                 await _unauthorized(scope, send, "Invalid API key.")
                 return
 
-            context = MCPRequestContext(
-                agent=agent,
-                db=session,
-                passphrase=request.headers.get("x-agentmail-passphrase") or None,
-            )
+            context = MCPRequestContext(agent=agent, db=session)
             ctx_token = set_request_context(context)
             try:
                 await self.app(scope, receive, send)

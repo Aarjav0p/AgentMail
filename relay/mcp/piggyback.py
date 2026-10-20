@@ -9,19 +9,17 @@ emission rules hold, a small unread-mail badge is attached in-band:
 3. ``unread > 0``.
 4. Sticky dedupe: state changed since the last footer emitted to this
    agent (``unread != agents.footer_unread`` OR ``latest.id != agents.footer_latest``).
-5. Count + one summary line + fixed hint only — never bodies.
+5. Count + sender/timestamp metadata + fixed hint only — never
+   subjects or bodies, and never decrypt mail just to render the badge.
 """
 from __future__ import annotations
 
 import datetime
-import json
 from typing import Any
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from relay.crypto.envelope import open_message
-from relay.crypto.vault import vault
 from relay.models.schema import Agent, FeatureFlag, Message
 
 FOOTER_HINT = "You have unread agentmail — call check_inbox to read it."
@@ -83,16 +81,6 @@ def should_emit(
     return not (unread == agent.footer_unread and latest.id == agent.footer_latest)
 
 
-def _latest_subject(latest: Message, enc_sk: bytes) -> str | None:
-    """Decrypt the latest subject for the footer — best effort."""
-    try:
-        payload = json.loads(open_message(latest.ciphertext, enc_sk))
-        subject = payload.get("subject")
-        return subject if isinstance(subject, str) and subject else None
-    except Exception:  # noqa: BLE001
-        return None
-
-
 async def apply_piggyback(
     db: AsyncSession,
     agent: Agent,
@@ -123,12 +111,6 @@ async def apply_piggyback(
     sender_handle = sender_result.scalar_one_or_none()
     if sender_handle:
         latest_info["from"] = _address(sender_handle)
-
-    entry = await vault.get(agent.id)
-    if entry is not None:
-        subject = _latest_subject(latest, bytes(entry.enc_sk))
-        if subject:
-            latest_info["subject"] = subject
 
     await update_footer_markers(db, agent.id, unread, latest.id)
 

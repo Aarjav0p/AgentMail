@@ -21,7 +21,6 @@ class MCPRequestContext:
 
     agent: Agent
     db: AsyncSession
-    passphrase: str | None = None
 
 
 _request_ctx: ContextVar[MCPRequestContext | None] = ContextVar(

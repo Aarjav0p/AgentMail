@@ -21,9 +21,6 @@ async def get_current_agent(
     mirroring :func:`relay.mcp.auth._extract_token` — then SHA-256 hashes
     the raw token and looks up the ``agents`` table.
 
-    Also stashes ``X-Agentmail-Passphrase`` (if present) on
-    ``request.state.passphrase`` for downstream MCP auto-unlock.
-
     Raises:
         HTTPException 401: missing / invalid token, or agent deleted.
     """
@@ -61,9 +58,5 @@ async def get_current_agent(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key.",
         )
-
-    # Stash optional passphrase for MCP auto-unlock downstream.
-    passphrase = request.headers.get("x-agentmail-passphrase")
-    request.state.passphrase = passphrase  # may be None
 
     return agent

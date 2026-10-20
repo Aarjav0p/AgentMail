@@ -7,6 +7,7 @@ crypto/vault suites still run anywhere.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
@@ -181,21 +182,38 @@ async def call_tool(
 ):
     """Invoke a registered MCP tool wrapper with a bound request context.
 
-    ``passphrase`` doubles as the simulated ``X-Agentmail-Passphrase``
-    header (transparent auto-unlock) and, for ``unlock_keychain``, as the
-    tool's own argument.  This exercises the real pipeline — rate limits,
+    ``passphrase`` emulates a prior explicit ``unlock_keychain`` call for
+    legacy ``user_passphrase`` agents: the key vault is primed before the
+    tool runs.  (The relay no longer accepts passphrases via HTTP headers.)
+    For ``unlock_keychain`` it is also passed as the tool's own argument.
+    This exercises the real pipeline — rate limits, server-custody
     auto-unlock, piggyback, commit — not just the tool functions.
     """
+    from relay.crypto.vault import vault
+    from relay.mcp import tools as tools_module
     from relay.mcp.context import (
         MCPRequestContext,
         reset_request_context,
         set_request_context,
     )
 
+    if (
+        passphrase is not None
+        and name != "unlock_keychain"
+        and getattr(agent, "custody_mode", "user_passphrase") != "server_kek"
+        and not await vault.is_unlocked(agent.id)
+    ):
+        keys = await asyncio.to_thread(
+            tools_module.derive_private_keys, agent, passphrase
+        )
+        if keys is not None:
+            enc_sk, sign_sk = keys
+            await tools_module.store_keys_in_vault(agent, enc_sk, sign_sk)
+
     if name == "unlock_keychain" and "passphrase" not in kwargs:
         kwargs["passphrase"] = passphrase
     wrapper = _tool_wrappers()[name]
-    token = set_request_context(MCPRequestContext(agent=agent, db=db, passphrase=passphrase))
+    token = set_request_context(MCPRequestContext(agent=agent, db=db))
     try:
         return json.loads(await wrapper(**kwargs))
     finally:

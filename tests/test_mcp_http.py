@@ -9,7 +9,7 @@ from __future__ import annotations
 from httpx import ASGITransport, AsyncClient
 
 from relay.mcp.server import mcp_server
-from tests.conftest import insert_agent, requires_db
+from tests.conftest import TEST_PASSPHRASE, insert_agent, requires_db
 
 pytestmark = requires_db
 
@@ -122,6 +122,26 @@ async def test_mcp_streamable_http_end_to_end(db):
             )
             whois_text = r.json()["result"]["content"][0]["text"]
             assert "mcp-alice@agentmail" in whois_text
+
+            # -- passphrases in HTTP headers are ignored (no header auto-unlock) --
+            _, legacy_key = await insert_agent(db, "mcp-legacy")
+            r = await http.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 5,
+                    "method": "tools/call",
+                    "params": {"name": "keychain_status", "arguments": {}},
+                },
+                headers={
+                    **_ACCEPT,
+                    "Authorization": f"Bearer {legacy_key}",
+                    "X-Agentmail-Passphrase": TEST_PASSPHRASE,
+                },
+            )
+            assert r.status_code == 200, r.text
+            legacy_status = r.json()["result"]["content"][0]["text"]
+            assert '"locked":true' in legacy_status
 
 
 def _app():

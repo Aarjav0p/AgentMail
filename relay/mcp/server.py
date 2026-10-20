@@ -3,29 +3,24 @@
 Registers the 10 Phase-1 tools with the behavioral nudges from §7.3.
 Each wrapper is thin: it delegates to :mod:`relay.mcp.tools`, which holds
 the real logic, and runs the shared orchestration in :func:`_execute`
-(rate limits, transparent auto-unlock, piggyback footer, commit).
+(rate limits, server-custody auto-unlock, piggyback footer, commit).
 """
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
 import json
 import logging
-import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from relay.crypto.vault import vault
 from relay.mcp import descriptions, tools
 from relay.mcp.context import get_request_context
 from relay.mcp.piggyback import apply_piggyback
 from relay.mcp.ratelimit import limiter
-from relay.mcp.tools import derive_private_keys, error_response
-from relay.models.schema import Agent, AuditLog
+from relay.mcp.tools import error_response
+from relay.models.schema import Agent
 
 logger = logging.getLogger("agentmail.mcp")
 
@@ -56,10 +51,6 @@ mcp_server = FastMCP(
 # version kwarg; the underlying low-level server reads this attribute.
 mcp_server._mcp_server.version = "0.1.0"  # noqa: SLF001
 
-# Failed auto-unlock negative cache: (agent_id, passphrase digest) → expiry.
-_auto_unlock_denied: dict[tuple[str, str], float] = {}
-_AUTO_UNLOCK_DENY_SECONDS = 60.0
-
 _UNAVAILABLE = json.dumps(
     {
         "error": {
@@ -78,39 +69,15 @@ ToolFn = Callable[..., Awaitable[dict[str, Any]]]
 # ---------------------------------------------------------------------------
 
 
-async def _auto_unlock_if_possible(agent: Agent, db: AsyncSession, passphrase: str | None) -> None:
-    """Transparent unlock via ``X-Agentmail-Passphrase`` (§4.2).
+async def _unlock_server_custody(agent: Agent) -> None:
+    """Warm the vault for ``server_kek`` custody agents (§4.2).
 
-    The Argon2id KDF runs at most once per unlock window: a successful
-    unlock lives in the vault for its idle TTL, and failures are
-    negatively cached briefly so a bad header cannot burn CPU per call.
+    Legacy ``user_passphrase`` agents must call ``unlock_keychain`` with
+    their passphrase explicitly — the relay never accepts passphrases
+    out-of-band (e.g. via HTTP headers, which can land in access logs).
     """
     if getattr(agent, "custody_mode", "user_passphrase") == "server_kek":
         await tools.get_or_unlock_vault_entry(agent)
-        return
-    if not passphrase:
-        return
-    if await vault.is_unlocked(agent.id):
-        return
-
-    cache_key = (agent.id, hashlib.sha256(passphrase.encode("utf-8")).hexdigest()[:16])
-    now = time.monotonic()
-    denied_until = _auto_unlock_denied.get(cache_key)
-    if denied_until is not None:
-        if denied_until > now:
-            return
-        del _auto_unlock_denied[cache_key]
-
-    keys = await asyncio.to_thread(derive_private_keys, agent, passphrase)
-    if keys is None:
-        if len(_auto_unlock_denied) > 1024:  # opportunistic prune
-            _auto_unlock_denied.clear()
-        _auto_unlock_denied[cache_key] = now + _AUTO_UNLOCK_DENY_SECONDS
-        return
-
-    enc_sk, sign_sk = keys
-    await tools.store_keys_in_vault(agent, enc_sk, sign_sk)
-    db.add(AuditLog(agent_id=agent.id, event="unlock"))
 
 
 async def _execute(tool_name: str, fn: ToolFn, *, is_send: bool = False) -> str:
@@ -141,8 +108,8 @@ async def _execute(tool_name: str, fn: ToolFn, *, is_send: bool = False) -> str:
                 )
             )
 
-    # -- transparent auto-unlock ---------------------------------------------
-    await _auto_unlock_if_possible(agent, db, context.passphrase)
+    # -- server-custody auto-unlock ------------------------------------------
+    await _unlock_server_custody(agent)
 
     # -- the tool's real work ---------------------------------------------
     try:
